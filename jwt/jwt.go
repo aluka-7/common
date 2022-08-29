@@ -1,124 +1,105 @@
+// Package jwt
+// @Title  jwt.go
+// @Description  jwt token
+// @Author  Brandon     时间（2022/8/29）
+// @Update  Brandon     时间（2022/8/29）
 package jwt
 
 import (
-	"errors"
+	"fmt"
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
 	"github.com/rs/zerolog/log"
 )
 
-// PassportClaims
-// {
-//  "app": "pyclass",
-//  "appid": 82,
-//  "exp": 1624995458,
-//  "id": 49,
-//  "oid": "oRb8OwokrjVzMAXGOvvlEzpJwaf4",
-//  "puid": "",
-//  "sub": "o7hLH06V6t1JNjukXclK2nQq8EvE", //unioind
-//}
-type PassportClaims struct {
-	Vid    int64  `json:"id"`    //for_os.users.id
-	Openid string `json:"oid"`   // for_os.users.openid
-	AppId  int64  `json:"appid"` //for_apis.wx_apps.id
-	App    string `json:"app"`   //for_apis.wx_apps.app_name
-	Scene  string `json:"scene"` //场景
-	Puid   string `json:"puid"`  //v2系统唯一性标识，只有绑定手机号才会存在
-	Bs     string `json:"bs"`    //v3系统存在于缓存中的唯一标识
-}
-type tokenStandardClaims struct {
-	jwt.StandardClaims
-	PassportClaims
-}
-
-// TokenProvider jwt配置加载,token生成和读取
+// TokenProvider jwt配置加载, token生成和读取
 type TokenProvider interface {
-	ReadToken(tokenString, audience, issuer string) (jti string, bean PassportClaims, err error)
-	MaskToken(audience, issuer, subject, jti string, nbf int64, claims PassportClaims) (signed string)
+	VerifyToken(tokenString, aud, iss string) (jti string, err error)
+	CreateToken(aud, iss, sub, jti string, nbf int64) (signed string)
 	Load(key string, exp int)
 }
 
 type jwtProvider struct {
-	claimKey []byte // claim密钥
-	exp      int    // 过期时间
+	secret []byte // claim 密钥
+	exp    int    // 过期时间
 }
 
-func NewTokenProvider() TokenProvider {
-	return &jwtProvider{}
+var JwtTokenProvider TokenProvider
+
+func init() {
+	JwtTokenProvider = new(jwtProvider)
 }
-func (a *jwtProvider) Load(key string, exp int) {
-	if len(key) < 8 {
-		panic("jwt的密钥长度必须大于等于8位")
+
+func (a *jwtProvider) Load(secret string, exp int) {
+	if len(secret) < 8 {
+		panic("The key length of jwt must be greater than or equal to 8 bits")
 	}
-	a.claimKey = []byte(key)
+	a.secret = []byte(secret)
 	a.exp = exp
 }
 
-var (
-	VerifyAudienceError = errors.New("接收JWT的一方不匹配")
-	VerifyIssuerError   = errors.New("JWT签发者不匹配")
-	CalaimsAssertError  = errors.New("claims类型不匹配")
-)
-
-func (a jwtProvider) ReadToken(tokenString, audience, issuer string) (jti string, bean PassportClaims, err error) {
-	token, err := jwt.ParseWithClaims(tokenString, &tokenStandardClaims{}, func(token *jwt.Token) (interface{}, error) {
-		return a.claimKey, nil
-	})
-	if err != nil {
-		return jti, bean, err
-	}
-	if claims, ok := token.Claims.(*tokenStandardClaims); ok {
-		if token.Valid { //VerifyExpiresAt,VerifyIssuedAt,VerifyNotBefore,
-			if !claims.VerifyAudience(audience, true) {
-				log.Info().Msgf("接收JWT的一方不匹配[%s]", audience)
-				return claims.Id, claims.PassportClaims, VerifyAudienceError
-			}
-			if !claims.VerifyIssuer(issuer, true) {
-				log.Info().Msgf("JWT签发者不匹配[%s]", audience)
-				return claims.Id, claims.PassportClaims, VerifyIssuerError
-			}
-			return claims.Id, claims.PassportClaims, nil
-		} else {
-			return claims.Id, claims.PassportClaims, err
-		}
-	} else {
-		return jti, bean, CalaimsAssertError
-	}
-}
-
-// MaskToken 签发token
-//aud：接收 JWT 的一方
-//exp：JWT 的过期时间，这个过期时间必须要大于签发时间
-//jti：JWT 的唯一身份标识，主要用来作为一次性 token, 从而回避重放攻击。
-//iat：JWT 的签发时间
-//iss：JWT 签发者
-//nbf：定义在什么时间之前，该 JWT 都是不可用的
-//sub：JWT 所面向的用户
-func (a jwtProvider) MaskToken(audience, issuer, subject, jti string, nbf int64, claims PassportClaims) (signed string) {
+// CreateToken
+// @title CreateToken
+// @description     创建token
+// @auth            Brandon     时间（2022/8/29）
+// @param           aud         JWT token 的收件人
+// @param           iss         JWT token 的发件人
+// @param           sub         JWT token 的主体
+// @param           jti         JWT token 的唯一标识符
+// @param           nbf         JWT token 的生效时间
+func (a jwtProvider) CreateToken(aud, iss, sub, jti string, nbf int64) (signed string) {
 	now := time.Now()
 	nowUnix := now.Unix()
 	exp := now.Add(time.Second * time.Duration(a.exp)).Unix()
-	return a.maskToken(audience, issuer, subject, jti, nowUnix, nbf, exp, claims)
-}
-func (a jwtProvider) maskToken(audience, issuer, subject, jti string, now, nbf, exp int64, claims PassportClaims) (signed string) {
-	tsc := &tokenStandardClaims{
-		StandardClaims: jwt.StandardClaims{
-			Audience:  audience,
-			ExpiresAt: exp,
-			IssuedAt:  now,
-			Issuer:    issuer,
-			NotBefore: nbf,
-			Subject:   subject,
-			Id:        jti,
-		},
-		PassportClaims: claims,
+
+	tsc := jwt.StandardClaims{
+		Audience:  aud,     // 认证 JWT 的收件人
+		ExpiresAt: exp,     // 认证过期时间
+		IssuedAt:  nowUnix, // 认证 JWT 的时间
+		Issuer:    iss,     // 认证 JWT 的发件人
+		NotBefore: nbf,     // 认证 JWT 的生效时间（时间戳）
+		Subject:   sub,     // 认证 JWT 的主体
+		Id:        jti,     // 认证 JWT 的唯一标识符（一般为用户id）这里为用户id
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, tsc)
-	if ss, err := token.SignedString(a.claimKey); err == nil {
-		return ss
+	signed, err := token.SignedString(a.secret)
+	if err != nil {
+		log.Err(err).Msg("签发token发生错误")
+	}
+	return
+}
+
+// VerifyToken
+// @title VerifyToken
+// @description     验证token
+// @auth            Brandon     时间（2022/8/29）
+// @param           tokenString JWT token
+// @param           aud         JWT token 的收件人
+// @param           iss         JWT token 的发件人
+func (a jwtProvider) VerifyToken(tokenString, aud, iss string) (jti string, err error) {
+	token, err := jwt.ParseWithClaims(tokenString, &jwt.StandardClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return a.secret, nil
+	})
+	if err != nil {
+		return jti, err
+	}
+	claims, ok := token.Claims.(*jwt.StandardClaims)
+
+	if ok && token.Valid {
+		if !claims.VerifyAudience(aud, true) {
+			log.Info().Msgf("JWT接收者不匹配[%s]", aud)
+			return claims.Id, jwt.NewValidationError("JWT接收者不匹配", jwt.ValidationErrorAudience)
+		}
+		if !claims.VerifyIssuer(iss, true) {
+			log.Info().Msgf("JWT签发者不匹配[%s]", iss)
+			return claims.Id, jwt.NewValidationError("JWT签发者不匹配", jwt.ValidationErrorIssuer)
+		}
+		return claims.Id, nil
 	} else {
-		log.Error("签发token发生错误:%+v", err)
-		return ""
+		return claims.Id, err
 	}
 }
