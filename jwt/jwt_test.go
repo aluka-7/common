@@ -22,9 +22,18 @@ func TestToken(t *testing.T) {
 		jti := "107"
 		nbf := now.Unix()
 
-		signed := jp.CreateToken(aud, iss, subject, jti, nbf)
-		_jti, err := jp.VerifyToken(signed, aud, iss)
+		userClaims := UserClaims{
+			UId:    1,
+			UName:  "Aluka-7",
+			ULevel: 1,
+			Avater: "",
+			Mobile: "136****9714",
+		}
+
+		signed := jp.CreateToken(aud, iss, subject, jti, nbf, userClaims)
+		_jti, claims, err := jp.VerifyToken(signed, aud, iss)
 		So(err, ShouldBeNil)
 		So(_jti, ShouldEqual, jti)
+		So(claims.UId, ShouldEqual, userClaims.UId)
 	})
 }
